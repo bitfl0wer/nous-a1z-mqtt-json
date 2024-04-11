@@ -13,15 +13,15 @@ struct Args {
     /// The MQTT server URL. Example: mqtt://localhost:1833
     pub server: String,
     /// Topic where the smart plugs are exposed under
-    topic: String,
+    pub topic: String,
     /// Username for authorization, if applicable
     #[arg(long)]
-    user: Option<String>,
+    pub user: Option<String>,
     /// Password for authorization, if applicable
     #[arg(long)]
-    pass: Option<String>,
+    pub pass: Option<String>,
     /// Friendly names of the smart plugs to query
-    friendly_names: Vec<String>,
+    pub friendly_names: Vec<String>,
 }
 
 #[tokio::main(flavor = "current_thread")]
