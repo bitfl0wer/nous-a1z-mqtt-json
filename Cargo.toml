@@ -1,5 +1,5 @@
 [package]
-name = "nam2json"
+name = "zpowergraph"
 version = "0.1.0"
 edition = "2021"
 
@@ -8,7 +8,9 @@ edition = "2021"
 [dependencies]
 anyhow = "1.0.82"
 clap = { version = "4.5.4", features = ["derive"] }
+env_logger = "0.11.3"
 lazy_static = "1.4.0"
+log = "0.4.21"
 rumqttc = "0.24.0"
 rusqlite = "0.31.0"
 sea-query = { version = "0.30.7", default-features = false, features = [
