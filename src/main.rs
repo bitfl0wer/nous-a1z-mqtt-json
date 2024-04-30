@@ -6,6 +6,7 @@
 
 use std::time::Duration;
 
+use anyhow::Result;
 use clap::Parser;
 use log::*;
 use rumqttc::{AsyncClient, Event, Incoming, MqttOptions};
@@ -47,11 +48,8 @@ pub struct Response {
     child_lock: Option<String>,
     current: Option<f32>,
     device: Option<Device>,
-    energy: Option<f32>,
-    indicator_mode: Option<String>,
-    linkquality: Option<u8>,
+    energy: Option<f64>,
     power: Option<u16>,
-    power_outage_memory: Option<String>,
     state: Option<String>,
     voltage: Option<u16>,
 }
@@ -59,23 +57,14 @@ pub struct Response {
 #[derive(Debug, Deserialize, Clone, PartialEq)]
 #[serde(rename_all = "camelCase")]
 pub struct Device {
-    application_version: Option<u8>,
-    date_code: Option<String>,
     friendly_name: Option<String>,
-    hardware_version: Option<u8>,
     ieee_addr: Option<String>,
     manufacturer_id: Option<u16>,
     manufacturer_name: Option<String>,
     model: Option<String>,
-    network_address: Option<u16>,
-    power_source: Option<String>,
-    stack_version: Option<u8>,
-    #[serde(rename = "type")]
-    device_type: Option<String>,
-    zcl_version: Option<u8>,
 }
 #[tokio::main]
-async fn main() {
+async fn main() -> Result<()> {
     env_logger::init();
     let args = Args::parse(); // Ensure Args have been given correctly, lazy_static does not seem to invoke Args::parse() in a way which would halt execution if an argument is missing/incorrect
                               // We can use `CLI_ARGS` after this.
@@ -87,6 +76,7 @@ async fn main() {
             path
         )
     });
+
     trace!("Opened database connection");
     let mut mqtt_options: MqttOptions =
         MqttOptions::new("zpowergraph", &CLI_ARGS.server, CLI_ARGS.port);
@@ -121,12 +111,12 @@ async fn main() {
                 continue;
             }
         };
-        debug!("Received notification: {:?}", notification);
+        trace!("Received notification: {:?}", notification);
         // TODO: Handle the notification, deserialize the JSON and store it in the database
         if let Event::Incoming(Incoming::Publish(packet)) = notification {
             let payload = packet.payload;
-            let response: Response = serde_json::from_slice(&payload).unwrap();
-            debug!("Deserialized response: {:?}", response);
+            let response: Response = serde_json::from_slice(&payload)?;
+            debug!("Deserialized response: {:#?}", response);
         }
 
         // TODO: Store different intervals of data with different resolutions. For example, store 1 minute data for 1 day, 1 hour data for 1 week, 1 day data for 1 month, 1 week data for 1 year.
