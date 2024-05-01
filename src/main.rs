@@ -206,7 +206,7 @@ async fn main() -> Result<()> {
             sqlx::query_with(&sql, value).execute(&pool).await?;
         }
 
-        // TODO: Store different intervals of data with different resolutions. For example, store 1 minute data for 1 day, 1 hour data for 1 week, 1 day data for 1 month, 1 week data for 1 year.
+        // TODO: Store different intervals of data with different resolutions. For example, store 1 minute data for 1 day, 1 hour data for 1 week, 1 day data forever.
         // Run cleanup every day.
     }
 }
