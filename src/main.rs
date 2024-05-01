@@ -190,6 +190,9 @@ async fn main() -> Result<()> {
         };
         trace!("Received notification: {:?}", notification);
         if let Event::Incoming(Incoming::Publish(packet)) = notification {
+            last_data_received = time::SystemTime::now()
+                .duration_since(UNIX_EPOCH)?
+                .as_secs();
             let payload = packet.payload;
             let response: Response = serde_json::from_slice(&payload)?;
             trace!("Deserialized response: {:#?}", response);
