@@ -79,6 +79,16 @@ pub enum DeviceTable {
     Voltage,
 }
 
+#[derive(sqlx::FromRow, Debug, Clone)]
+#[allow(dead_code)]
+pub struct DeviceTableRow {
+    friendly_name: String,
+    current: f32,
+    energy: f32,
+    power: u16,
+    voltage: u16,
+}
+
 async fn initialize_database() -> Result<SqlitePool> {
     let path = CLI_ARGS.db.as_deref().unwrap_or("./zpowergraph.db");
     let options = SqliteConnectOptions::new()
@@ -121,8 +131,14 @@ async fn initialize_table(pool: &SqlitePool) -> Result<()> {
 }
 
 async fn connect_mqtt_client() -> Result<(AsyncClient, EventLoop)> {
-    let mut mqtt_options: MqttOptions =
-        MqttOptions::new("zpowergraph", &CLI_ARGS.server, CLI_ARGS.port);
+    // get random number from 0 to 100000
+    let random_number = rand::random::<u32>() % 100000;
+
+    let mut mqtt_options: MqttOptions = MqttOptions::new(
+        format!("zpowergraph-{}", random_number),
+        &CLI_ARGS.server,
+        CLI_ARGS.port,
+    );
     if let (Some(user), Some(pass)) = (&CLI_ARGS.user, &CLI_ARGS.pass) {
         mqtt_options.set_credentials(user, pass);
     }
@@ -159,6 +175,10 @@ async fn main() -> Result<()> {
     let pool = initialize_database().await?;
     initialize_table(&pool).await?;
     let (_, mut eventloop) = connect_mqtt_client().await?;
+
+    let mut last_data_received: u64 = time::SystemTime::now()
+        .duration_since(UNIX_EPOCH)?
+        .as_secs();
 
     loop {
         let notification = match eventloop.poll().await {
@@ -204,6 +224,52 @@ async fn main() -> Result<()> {
                 ])
                 .build_sqlx(SqliteQueryBuilder);
             sqlx::query_with(&sql, value).execute(&pool).await?;
+        } else {
+            let current_time = time::SystemTime::now()
+                .duration_since(UNIX_EPOCH)?
+                .as_secs();
+            if current_time - last_data_received > 30 {
+                info!("No data received in the last 30s.");
+                // Select last data from database and insert it into the database again with the current timestamp.
+
+                last_data_received = current_time;
+                let (sql, values) = Query::select()
+                    .columns([
+                        DeviceTable::FriendlyName,
+                        DeviceTable::Current,
+                        DeviceTable::Energy,
+                        DeviceTable::Power,
+                        DeviceTable::Voltage,
+                    ])
+                    .from(DeviceTable::Table)
+                    .order_by(DeviceTable::Id, sea_query::Order::Desc)
+                    .limit(1)
+                    .build_sqlx(SqliteQueryBuilder);
+                let row = sqlx::query_as_with::<_, DeviceTableRow, _>(&sql, values.clone())
+                    .fetch_one(&pool)
+                    .await
+                    .unwrap();
+                let (sql, value) = Query::insert()
+                    .into_table(DeviceTable::Table)
+                    .columns([
+                        DeviceTable::FriendlyName,
+                        DeviceTable::Timestamp,
+                        DeviceTable::Current,
+                        DeviceTable::Energy,
+                        DeviceTable::Power,
+                        DeviceTable::Voltage,
+                    ])
+                    .values_panic([
+                        row.friendly_name.into(),
+                        current_time.into(),
+                        0.into(), // Assume no current is being drawn; if it was, the device would have sent data.
+                        row.energy.into(),
+                        0.into(), // Same as above
+                        row.voltage.into(),
+                    ])
+                    .build_sqlx(SqliteQueryBuilder);
+                sqlx::query_with(&sql, value).execute(&pool).await?;
+            }
         }
 
         // TODO: Store different intervals of data with different resolutions. For example, store 1 minute data for 1 day, 1 hour data for 1 week, 1 day data forever.
