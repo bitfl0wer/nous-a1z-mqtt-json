@@ -4,13 +4,14 @@
 // License, v. 2.0. If a copy of the MPL was not distributed with this
 // file, You can obtain one at https://mozilla.org/MPL/2.0/.
 
+use std::collections::HashMap;
 use std::time::{self, Duration, UNIX_EPOCH};
 
 use anyhow::Result;
 use clap::Parser;
 use log::*;
 use rumqttc::{AsyncClient, Event, EventLoop, Incoming, MqttOptions};
-use sea_query::{ColumnDef, Iden, Query, SqliteQueryBuilder, Table};
+use sea_query::{ColumnDef, Expr, Iden, Query, SqliteQueryBuilder, Table};
 use sea_query_binder::SqlxBinder;
 use serde::Deserialize;
 use sqlx::sqlite::SqliteConnectOptions;
@@ -176,9 +177,16 @@ async fn main() -> Result<()> {
     initialize_table(&pool).await?;
     let (_, mut eventloop) = connect_mqtt_client().await?;
 
-    let mut last_data_received: u64 = time::SystemTime::now()
-        .duration_since(UNIX_EPOCH)?
-        .as_secs();
+    let mut last_data_received = HashMap::new();
+
+    for device in CLI_ARGS.friendly_names.iter() {
+        last_data_received.insert(
+            device.clone(),
+            time::SystemTime::now()
+                .duration_since(UNIX_EPOCH)?
+                .as_secs(),
+        );
+    }
 
     loop {
         let notification = match eventloop.poll().await {
@@ -190,11 +198,19 @@ async fn main() -> Result<()> {
         };
         trace!("Received notification: {:?}", notification);
         if let Event::Incoming(Incoming::Publish(packet)) = notification {
-            last_data_received = time::SystemTime::now()
-                .duration_since(UNIX_EPOCH)?
-                .as_secs();
             let payload = packet.payload;
             let response: Response = serde_json::from_slice(&payload)?;
+            if let Some(last_data) = last_data_received.get_mut(&response.device.friendly_name) {
+                *last_data = time::SystemTime::now()
+                    .duration_since(UNIX_EPOCH)?
+                    .as_secs();
+            } else {
+                warn!(
+                    "Received data for unknown device: {:?}",
+                    response.device.friendly_name
+                );
+                continue;
+            }
             trace!("Deserialized response: {:#?}", response);
             info!(
                 "Received data for device {}: current: {}, energy: {}, power: {}, voltage: {}",
@@ -231,47 +247,54 @@ async fn main() -> Result<()> {
             let current_time = time::SystemTime::now()
                 .duration_since(UNIX_EPOCH)?
                 .as_secs();
-            if current_time - last_data_received > 30 {
-                info!("No data received in the last 30s.");
-                // Select last data from database and insert it into the database again with the current timestamp.
 
-                last_data_received = current_time;
-                let (sql, values) = Query::select()
-                    .columns([
-                        DeviceTable::FriendlyName,
-                        DeviceTable::Current,
-                        DeviceTable::Energy,
-                        DeviceTable::Power,
-                        DeviceTable::Voltage,
-                    ])
-                    .from(DeviceTable::Table)
-                    .order_by(DeviceTable::Id, sea_query::Order::Desc)
-                    .limit(1)
-                    .build_sqlx(SqliteQueryBuilder);
-                let row = sqlx::query_as_with::<_, DeviceTableRow, _>(&sql, values.clone())
-                    .fetch_one(&pool)
-                    .await
-                    .unwrap();
-                let (sql, value) = Query::insert()
-                    .into_table(DeviceTable::Table)
-                    .columns([
-                        DeviceTable::FriendlyName,
-                        DeviceTable::Timestamp,
-                        DeviceTable::Current,
-                        DeviceTable::Energy,
-                        DeviceTable::Power,
-                        DeviceTable::Voltage,
-                    ])
-                    .values_panic([
-                        row.friendly_name.into(),
-                        current_time.into(),
-                        0.into(), // Assume no current is being drawn; if it was, the device would have sent data.
-                        row.energy.into(),
-                        0.into(), // Same as above
-                        row.voltage.into(),
-                    ])
-                    .build_sqlx(SqliteQueryBuilder);
-                sqlx::query_with(&sql, value).execute(&pool).await?;
+            for (device, last_data_received) in last_data_received.iter_mut() {
+                if current_time - *last_data_received > 30 {
+                    info!(
+                        "No data received for device \"{}\" in the last 30s.",
+                        device
+                    );
+                    // Select last data from database and insert it into the database again with the current timestamp.
+
+                    *last_data_received = current_time;
+                    let (sql, values) = Query::select()
+                        .columns([
+                            DeviceTable::FriendlyName,
+                            DeviceTable::Current,
+                            DeviceTable::Energy,
+                            DeviceTable::Power,
+                            DeviceTable::Voltage,
+                        ])
+                        .from(DeviceTable::Table)
+                        .and_where(Expr::col(DeviceTable::FriendlyName).eq(device))
+                        .order_by(DeviceTable::Id, sea_query::Order::Desc)
+                        .limit(1)
+                        .build_sqlx(SqliteQueryBuilder);
+                    let row = sqlx::query_as_with::<_, DeviceTableRow, _>(&sql, values.clone())
+                        .fetch_one(&pool)
+                        .await
+                        .unwrap();
+                    let (sql, value) = Query::insert()
+                        .into_table(DeviceTable::Table)
+                        .columns([
+                            DeviceTable::FriendlyName,
+                            DeviceTable::Timestamp,
+                            DeviceTable::Current,
+                            DeviceTable::Energy,
+                            DeviceTable::Power,
+                            DeviceTable::Voltage,
+                        ])
+                        .values_panic([
+                            row.friendly_name.into(),
+                            current_time.into(),
+                            0.into(), // Assume no current is being drawn; if it was, the device would have sent data.
+                            row.energy.into(),
+                            0.into(), // Same as above
+                            row.voltage.into(),
+                        ])
+                        .build_sqlx(SqliteQueryBuilder);
+                    sqlx::query_with(&sql, value).execute(&pool).await?;
+                }
             }
         }
 
